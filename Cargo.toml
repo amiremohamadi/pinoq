@@ -5,5 +5,10 @@ authors = ["amiremohamadi"]
 edition = "2021"
 
 [dependencies]
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
 pretty_env_logger = "0.5"
 anyhow = "1.0"
+fuser = "0.15"
+memmap = "0.7"
+bincode = "1.3"

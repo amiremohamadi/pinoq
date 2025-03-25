@@ -1,76 +1,42 @@
-use anyhow::Result;
-use std::env;
-use std::str::FromStr;
+mod pinoq;
+use clap::Parser;
 
-#[derive(Debug)]
-pub enum Backend {
-    Gz,
+#[derive(Debug, Parser)]
+#[clap(version)]
+struct Args {
+    /// Mount a volume based on specified config
+    #[clap(long("mount"))]
+    config_path: Option<String>,
+    /// Create a pinoq volume with the specified size
+    #[clap(
+        long("mkfs"),
+        num_args = 2,
+        value_names = ["ASPECTS", "BLOCKS"],
+        requires = "path"
+    )]
+    file_system_size: Option<Vec<u32>>,
+    path: Option<String>,
 }
 
-impl FromStr for Backend {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "gz" => Ok(Self::Gz),
-            _ => Err(anyhow::anyhow!("invalid backend {}", s)),
-        }
-    }
-}
-
-impl Default for Backend {
-    fn default() -> Self {
-        Self::Gz
-    }
-}
-
-pub struct Config {
-    pub mountpoint: String,
-    pub disk: String,
-    pub backend: Backend,
-    pub aspects: u32,
-    pub block_size: u32,
-}
-
-pub struct PinoqFs {
-    config: Config,
-}
-
-impl PinoqFs {
-    pub fn new(config: Config) -> Self {
-        PinoqFs { config }
-    }
-}
-
-fn mount_pinoq(config: Config) {
-    let fs = PinoqFs::new(config);
-}
-
-fn main() {
+fn main() -> anyhow::Result<()> {
     pretty_env_logger::formatted_builder()
         .parse_filters("INFO")
         .init();
 
-    let mountpoint = env::var("PINOQ_MOUNT").unwrap_or_default();
-    let disk = env::var("PINOQ_DISK").unwrap_or_default();
-    let backend = env::var("PINOQ_BACKEND")
-        .ok()
-        .and_then(|x| x.parse::<Backend>().ok())
-        .unwrap_or_default();
-    let aspects = env::var("PINOQ_ASPECTS")
-        .ok()
-        .and_then(|x| x.parse::<u32>().ok())
-        .unwrap_or(8);
-    let block_size = env::var("PINOQ_BLOCK_SIZE")
-        .ok()
-        .and_then(|x| x.parse::<u32>().ok())
-        .unwrap_or(2048);
+    let args = Args::parse();
+    if let Some(path) = args.config_path {
+        pinoq::mount(
+            pinoq::Config {
+                disk: "./volume.pnoq".to_string(),
+                aspects: 2,
+                block_size: 1024,
+            },
+            "/tmp/pinoq",
+        );
+    } else if let (Some(size), Some(path)) = (args.file_system_size, args.path) {
+        let (aspects, blocks) = (size[0], size[1]);
+        pinoq::mkfs(aspects, blocks, &path)?;
+    }
 
-    mount_pinoq(Config {
-        mountpoint,
-        disk,
-        backend,
-        aspects,
-        block_size,
-    });
+    Ok(())
 }
