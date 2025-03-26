@@ -1,5 +1,7 @@
 mod pinoq;
+
 use clap::Parser;
+use pinoq::config::Config;
 
 #[derive(Debug, Parser)]
 #[clap(version)]
@@ -25,13 +27,11 @@ fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     if let Some(path) = args.config_path {
-        pinoq::mount(
-            pinoq::Config {
-                disk: "./volume.pnoq".to_string(),
-                current_aspect: 0,
-            },
-            "/tmp/pinoq",
-        );
+        let config = match std::fs::read_to_string(path) {
+            Ok(c) => Config::new(&c),
+            _ => panic!("Couldn't find the file"),
+        }?;
+        pinoq::mount(config);
     } else if let (Some(size), Some(path)) = (args.file_system_size, args.path) {
         let (aspects, blocks) = (size[0], size[1]);
         pinoq::mkfs(aspects, blocks, &path)?;

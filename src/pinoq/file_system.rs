@@ -3,7 +3,7 @@ use std::fs::OpenOptions;
 use std::io::{prelude::*, Cursor, SeekFrom};
 use std::time::Duration;
 
-use crate::pinoq::{Aspect, Block, Dir, INode, SuperBlock};
+use crate::pinoq::{config::Config, Aspect, Block, Dir, INode, SuperBlock};
 
 use anyhow::Result;
 use bitvec::{order::Lsb0, vec::BitVec};
@@ -11,11 +11,6 @@ use fuser::{Filesystem, ReplyAttr, ReplyCreate, ReplyDirectory, ReplyEntry, Requ
 use memmap::MmapMut;
 
 const TTL: Duration = Duration::from_secs(1);
-
-pub struct Config {
-    pub disk: String,
-    pub current_aspect: u32,
-}
 
 pub struct PinoqFs {
     config: Config,
