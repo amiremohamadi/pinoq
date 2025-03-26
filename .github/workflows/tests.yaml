@@ -1,0 +1,34 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y libfuse-dev
+
+      - name: Build Pinoq
+        run: cargo build --release
+
+      - name: Prepare
+        run: |
+          cp ./config.toml /tmp/config.toml
+          cp ./target/release/pinoq /usr/local/bin
+          mkdir /tmp/pinoq
+
+      - name: Integration Tests
+        run: |
+          pinoq --mkfs 2 1024 /tmp/volume.pnoq &
+          sleep 5
+          python ./tests/integration.py
