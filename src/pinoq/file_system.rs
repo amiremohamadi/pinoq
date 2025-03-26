@@ -1,25 +1,26 @@
 use std::ffi::OsStr;
 use std::fs::OpenOptions;
-use std::io::Cursor;
-use std::io::Read;
+use std::io::{prelude::*, Cursor, Read, SeekFrom};
 use std::time::UNIX_EPOCH;
 
-use crate::pinoq::{Aspect, SuperBlock};
+use crate::pinoq::{Aspect, Block, Dir, INode, SuperBlock};
 
 use anyhow::Result;
+use bitvec::{order::Lsb0, vec::BitVec};
 use fuser::{FileAttr, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request};
 use memmap::MmapMut;
 
 pub struct Config {
     pub disk: String,
-    pub aspects: u32,
-    pub block_size: u32,
+    pub current_aspect: u32,
 }
 
 pub struct PinoqFs {
     config: Config,
     mmap: MmapMut,
-    current_aspect: usize,
+    sblock: SuperBlock,
+    // should be constructed only after decrypting all the aspects
+    block_map: BitVec<u8, Lsb0>,
 }
 
 impl PinoqFs {
@@ -32,60 +33,70 @@ impl PinoqFs {
         let mut cursor = Cursor::new(&mmap);
 
         let sblock = SuperBlock::deserialize_from(&mut cursor)?;
-        println!("superblock {:?}", sblock);
 
-        Ok(PinoqFs {
+        let mut fs = PinoqFs {
             config,
             mmap,
-            current_aspect: 0,
-        })
+            sblock,
+            block_map: BitVec::new(),
+        };
+        fs.construct_block_map()?;
+        fs.init_root()?;
+
+        Ok(fs)
+    }
+
+    fn construct_block_map(&mut self) -> Result<()> {
+        log::debug!("Constructing Block Map for {} Aspects", self.sblock.aspects);
+        for i in 0..self.sblock.aspects {
+            let aspect = self.get_aspect(i)?;
+            self.block_map &= aspect.block_map;
+        }
+        Ok(())
+    }
+
+    fn get_aspect(&self, n: u32) -> Result<Aspect> {
+        let offset =
+            std::mem::size_of::<SuperBlock>() + (Aspect::size_of(self.sblock.blocks) * n as usize);
+
+        let mut cursor = Cursor::new(&self.mmap);
+        cursor.seek(SeekFrom::Start(offset as _))?;
+
+        Aspect::deserialize_from(cursor, self.sblock.blocks)
+    }
+
+    // TODO: move to mkfs
+    fn init_root(&mut self) -> Result<()> {
+        let aspect = self.get_aspect(self.config.current_aspect)?;
+        Ok(())
+    }
+
+    fn get_inode_from_block(&self, n: u32) -> Result<INode> {
+        log::debug!("Getting Inode From Block {}", n);
+
+        let mut cursor = Cursor::new(&self.mmap);
+        cursor.seek(SeekFrom::Start(self.block_offset(n) as _))?;
+
+        INode::deserialize_from(cursor)
+    }
+
+    fn get_dir_from_block(&self, n: u32) -> Result<Dir> {
+        log::debug!("Getting Directory From Block");
+
+        let offset = 0;
+
+        Ok(Dir::default())
+    }
+
+    fn block_offset(&self, n: u32) -> usize {
+        std::mem::size_of::<SuperBlock>()
+            + Aspect::size_of(self.sblock.blocks) * (self.sblock.aspects as usize)
+            + std::mem::size_of::<Block>() * (n as usize)
     }
 }
 
-const HELLO_TXT_ATTR: FileAttr = FileAttr {
-    ino: 2,
-    size: 13,
-    blocks: 1,
-    atime: UNIX_EPOCH,
-    mtime: UNIX_EPOCH,
-    ctime: UNIX_EPOCH,
-    crtime: UNIX_EPOCH,
-    kind: fuser::FileType::RegularFile,
-    perm: 0o644,
-    nlink: 1,
-    uid: 501,
-    gid: 20,
-    rdev: 0,
-    flags: 0,
-    blksize: 512,
-};
-
-const HELLO_DIR_ATTR: FileAttr = FileAttr {
-    ino: 1,
-    size: 0,
-    blocks: 0,
-    atime: UNIX_EPOCH,
-    mtime: UNIX_EPOCH,
-    ctime: UNIX_EPOCH,
-    crtime: UNIX_EPOCH,
-    kind: fuser::FileType::Directory,
-    perm: 0o755,
-    nlink: 2,
-    uid: 501,
-    gid: 20,
-    rdev: 0,
-    flags: 0,
-    blksize: 512,
-};
-
 impl Filesystem for PinoqFs {
-    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        // if name.to_str() == Some("test.txt") {
-        //     reply.entry(&std::time::Duration::from_secs(1), &HELLO_TXT_ATTR, 0);
-        // } else {
-        //     reply.error(64);
-        // }
-    }
+    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {}
 
     fn readdir(
         &mut self,
@@ -95,15 +106,21 @@ impl Filesystem for PinoqFs {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
+        // match self.get_block(ino) {
+        //     Ok(b) => {
+        //         let node = INode::deserialize_from()
+        //     }
+        //     Err(_) => reply.error(libc::ENOENT),
+        // }
+
         if ino != 1 {
-            reply.error(64);
+            reply.error(libc::ENOENT);
             return;
         }
 
         let entries = vec![
             (1, fuser::FileType::Directory, "."),
             (1, fuser::FileType::Directory, ".."),
-            (2, fuser::FileType::RegularFile, "test.txt"),
         ];
 
         for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
@@ -129,10 +146,10 @@ impl Filesystem for PinoqFs {
     }
 
     fn getattr(&mut self, _req: &Request, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
-        match ino {
-            1 => reply.attr(&std::time::Duration::from_secs(1), &HELLO_DIR_ATTR),
-            2 => reply.attr(&std::time::Duration::from_secs(1), &HELLO_TXT_ATTR),
-            _ => reply.error(64),
-        }
+        // match ino {
+        //     1 => reply.attr(&std::time::Duration::from_secs(1), &HELLO_DIR_ATTR),
+        //     2 => reply.attr(&std::time::Duration::from_secs(1), &HELLO_TXT_ATTR),
+        //     _ => reply.error(64),
+        // }
     }
 }

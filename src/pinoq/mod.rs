@@ -3,11 +3,10 @@ mod file_system;
 
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::mem;
 
 use anyhow::Result;
 
-pub use file_format::{Aspect, Block, SuperBlock};
+pub use file_format::{Aspect, Block, Dir, INode, SuperBlock};
 pub use file_system::{Config, PinoqFs};
 
 pub fn mount(config: Config, mountpoint: &str) {
@@ -25,13 +24,21 @@ pub fn mount(config: Config, mountpoint: &str) {
 pub fn mkfs(aspects: u32, blocks: u32, path: &str) -> Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
 
-    let length = mem::size_of::<SuperBlock>()
-        + mem::size_of::<Aspect>() * (aspects as usize)
-        + mem::size_of::<Block>() * (blocks as usize);
-    file.set_len(length as _);
+    let length = std::mem::size_of::<SuperBlock>()
+        + Aspect::size_of(blocks) * (aspects as usize)
+        + std::mem::size_of::<Block>() * (blocks as usize);
+    file.set_len(length as _)?;
 
-    let mut sblock = SuperBlock::new(aspects, blocks);
+    let uid = unsafe { libc::getuid() };
+    let gid = unsafe { libc::getgid() };
+
+    let mut sblock = SuperBlock::new(aspects, blocks, uid, gid);
     sblock.serialize_into(&mut file)?;
+
+    for _ in 0..aspects {
+        let mut aspect = Aspect::new(blocks);
+        aspect.serialize_into(&mut file)?;
+    }
 
     Ok(())
 }

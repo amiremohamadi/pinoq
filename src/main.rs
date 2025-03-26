@@ -20,7 +20,7 @@ struct Args {
 
 fn main() -> anyhow::Result<()> {
     pretty_env_logger::formatted_builder()
-        .parse_filters("INFO")
+        .parse_filters("DEBUG")
         .init();
 
     let args = Args::parse();
@@ -28,8 +28,7 @@ fn main() -> anyhow::Result<()> {
         pinoq::mount(
             pinoq::Config {
                 disk: "./volume.pnoq".to_string(),
-                aspects: 2,
-                block_size: 1024,
+                current_aspect: 0,
             },
             "/tmp/pinoq",
         );
