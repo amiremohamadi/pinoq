@@ -1,18 +1,11 @@
 [Unit]
 Description=pinoq
 Documentation="https://github.com/amiremohamadi/pinoq"
-After=network.target
 
 [Service]
+User=root
 Type=simple
-
-Environment=PINOQ_MOUNT="/tmp/mnt"
-Environment=PINOQ_DISK="/tmp/disk.gz"
-Environment=PINOQ_BACKEND="gz"
-Environment=PINOQ_ASPECTS=8
-Environment=PINOQ_BLOCK_SIZE=2048
-
-User=user
+ExecStart=pinoq --mount /etc/pinoq.toml
 Restart=on-failure
 
 [Install]

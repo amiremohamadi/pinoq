@@ -8,3 +8,6 @@ on ubuntu:
 ```sh
 $ sudo apt-get install -y libfuse-dev libssl-dev pkg-config
 ```
+
+## Contributing
+Take a look at [HACKING.md](./HACKING.md).
