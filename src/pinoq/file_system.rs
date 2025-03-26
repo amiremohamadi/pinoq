@@ -233,7 +233,7 @@ impl Filesystem for PinoqFs {
         reply: ReplyCreate,
     ) {
         let node = INode {
-            mode: libc::S_IFDIR,
+            mode: libc::S_IFREG,
             block_size: crate::pinoq::BLOCK_SIZE as _,
             data_block: 3,
             uid: self.sblock.uid,
