@@ -1,16 +1,14 @@
 mod file_format;
 mod file_system;
 
-use std::fs::OpenOptions;
-use std::io::Write;
-
 use anyhow::Result;
+use std::fs::OpenOptions;
 
-pub use file_format::{Aspect, Block, Dir, INode, SuperBlock};
+pub use file_format::{Aspect, Block, Dir, INode, SuperBlock, BLOCK_SIZE};
 pub use file_system::{Config, PinoqFs};
 
 pub fn mount(config: Config, mountpoint: &str) {
-    let mut fs = PinoqFs::new(config).unwrap();
+    let fs = PinoqFs::new(config).unwrap();
     let _ = fuser::mount2(
         fs,
         mountpoint,

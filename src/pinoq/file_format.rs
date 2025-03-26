@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
@@ -8,7 +8,7 @@ use fuser::{FileAttr, FileType};
 use serde::{Deserialize, Serialize};
 
 const MAGIC: u32 = 0x504E4F51u32;
-const BLOCK_SIZE: usize = 1024;
+pub const BLOCK_SIZE: usize = 1 << 10;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SuperBlock {
@@ -79,10 +79,12 @@ impl Aspect {
     }
 
     pub fn size_of(blocks: u32) -> usize {
-        (blocks / 8) as usize
+        blocks as usize
+        // (blocks / 8) as usize
     }
 }
 
+#[allow(dead_code)]
 pub struct Block([u8; BLOCK_SIZE]);
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -92,6 +94,7 @@ pub struct INode {
     pub block_size: u32,
     pub uid: u32,
     pub gid: u32,
+    pub data_block: u32,
 }
 
 impl INode {
