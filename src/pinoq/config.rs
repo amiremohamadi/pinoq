@@ -5,7 +5,13 @@ use serde::Deserialize;
 pub struct Config {
     pub disk: String,
     pub mount: String,
-    pub current_aspect: u32,
+    pub current: Current,
+}
+
+#[derive(Deserialize)]
+pub struct Current {
+    pub aspect: u32,
+    pub password: String,
 }
 
 impl Config {
