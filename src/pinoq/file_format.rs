@@ -4,11 +4,92 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
 use bitvec::{order::Lsb0, vec::BitVec};
+use crypto::buffer::{BufferResult, ReadBuffer, WriteBuffer};
+use crypto::{aes, blockmodes, buffer};
 use fuser::{FileAttr, FileType};
 use serde::{Deserialize, Serialize};
 
+const IV_LEN: usize = 16;
+const KEY_LEN: usize = 32;
 const MAGIC: u32 = 0x504E4F51u32;
 pub const BLOCK_SIZE: usize = 1 << 10;
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Key([u8; KEY_LEN]);
+
+fn random_key() -> Key {
+    let mut k = [0; KEY_LEN];
+    rand::fill(&mut k[..]);
+    Key(k)
+}
+
+fn decrypt(encrypted_data: &[u8], key: &Key, password: &str) -> Result<Vec<u8>> {
+    let mut decryptor = aes::cbc_decryptor(
+        aes::KeySize::KeySize256,
+        &key.0[..],
+        &password.as_bytes().to_vec(),
+        blockmodes::PkcsPadding,
+    );
+
+    let mut final_result = Vec::<u8>::new();
+    let mut read_buffer = buffer::RefReadBuffer::new(encrypted_data);
+    let mut buffer = [0; 8192];
+    let mut write_buffer = buffer::RefWriteBuffer::new(&mut buffer);
+
+    loop {
+        let result = decryptor
+            .decrypt(&mut read_buffer, &mut write_buffer, true)
+            .unwrap();
+        final_result.extend(
+            write_buffer
+                .take_read_buffer()
+                .take_remaining()
+                .iter()
+                .cloned(),
+        );
+        match result {
+            BufferResult::BufferUnderflow => break,
+            BufferResult::BufferOverflow => {}
+        }
+    }
+
+    Ok(final_result)
+}
+
+fn encrypt(data: &[u8], key: &Vec<u8>, iv: &Vec<u8>) -> Result<Vec<u8>> {
+    let mut encryptor = aes::cbc_encryptor(
+        aes::KeySize::KeySize256,
+        &key[..],
+        &iv[..],
+        blockmodes::PkcsPadding,
+    );
+
+    let mut final_result = Vec::<u8>::new();
+    let mut read_buffer = buffer::RefReadBuffer::new(data);
+    let mut buffer = [0; 8192];
+    let mut write_buffer = buffer::RefWriteBuffer::new(&mut buffer);
+
+    loop {
+        let result = encryptor
+            .encrypt(&mut read_buffer, &mut write_buffer, true)
+            .unwrap();
+
+        final_result.extend(
+            write_buffer
+                .take_read_buffer()
+                .take_remaining()
+                .iter()
+                .cloned(),
+        );
+
+        match result {
+            BufferResult::BufferUnderflow => break,
+            BufferResult::BufferOverflow => {}
+        }
+    }
+
+    Ok(final_result)
+}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SuperBlock {
@@ -45,19 +126,56 @@ impl SuperBlock {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EncryptedAspect {
+    // to encrypt/decrypt the aspect
+    pub key: Key,
+    pub encrypted_data: Vec<u8>,
+}
+
+impl EncryptedAspect {
+    pub fn serialize_into<W>(&mut self, w: W) -> Result<()>
+    where
+        W: Write,
+    {
+        bincode::serialize_into(w, self).map_err(|e| e.into())
+    }
+
+    pub fn deserialize_from<R>(r: R) -> Result<Self>
+    where
+        R: Read,
+    {
+        bincode::deserialize_from(r).map_err(|e| e.into())
+    }
+
+    pub fn size_of(n: u32) -> usize {
+        // FIXME: calculate the length instead of using hardcoded numbers
+        ((n as usize) / 8) + 88
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Aspect {
+    // to encrypt/decrypt the blocks
+    pub key: Key,
     pub block_map: BitVec<u8, Lsb0>,
-    // TODO: encrypt the fields using a RSA key
-    // pub key: [u8; 32],
-    // pub gen: [u8; 32],
 }
 
 impl Aspect {
     pub fn new(blocks: u32) -> Self {
         Self {
+            key: random_key(),
             block_map: BitVec::repeat(false, blocks as _),
         }
+    }
+
+    pub fn serialize(&self) -> Result<Vec<u8>> {
+        let mut buf = vec![];
+
+        buf.extend_from_slice(&self.key.0);
+        buf.extend_from_slice(&self.block_map.as_raw_slice());
+
+        Ok(buf)
     }
 
     pub fn serialize_into<W>(&mut self, mut w: W) -> Result<()>
@@ -67,25 +185,88 @@ impl Aspect {
         Ok(w.write_all(self.block_map.as_raw_slice())?)
     }
 
-    pub fn deserialize_from<R>(mut r: R, n: u32) -> Result<Self>
-    where
-        R: Read,
-    {
-        let mut buf = vec![0u8; n as usize];
-        r.read_exact(&mut buf)?;
+    //     pub fn deserialize_from<R>(mut r: R, n: u32) -> Result<Self>
+    //     where
+    //         R: Read,
+    //     {
+    //         let mut buf = vec![0u8; n as usize];
+    //         r.read_exact(&mut buf)?;
+    //         Ok(Self {
+    //             key: random_key(), // FIXME
+    //             block_map: BitVec::<u8, Lsb0>::from_slice(&buf),
+    //         })
+    //     }
+
+    // pub fn size_of(blocks: u32) -> usize {
+    //     blocks as usize
+    //     // (blocks / 8) as usize
+    // }
+
+    pub fn from_encrypted_aspect(ea: EncryptedAspect, password: &str) -> Result<Self> {
+        let raw_data = decrypt(&ea.encrypted_data, &ea.key, password)?;
+
+        let mut k = [0u8; KEY_LEN];
+        k.copy_from_slice(&raw_data[..KEY_LEN]);
+
         Ok(Self {
-            block_map: BitVec::<u8, Lsb0>::from_slice(&buf),
+            key: Key(k), // FIXME
+            block_map: BitVec::<u8, Lsb0>::from_slice(&raw_data[KEY_LEN..]),
         })
     }
 
-    pub fn size_of(blocks: u32) -> usize {
-        blocks as usize
-        // (blocks / 8) as usize
+    pub fn to_encrypted_aspect(&self, password: &str) -> Result<EncryptedAspect> {
+        let key = random_key();
+        // TODO: currently we're using password as IV (init vector)
+        // should use PBKDF in the future and fill the IV with random data
+        let encoded = self.serialize()?;
+        // make sure password contains at most IV_LEN bytes
+        let encrypted_data = encrypt(
+            encoded.as_slice(),
+            &key.0.to_vec(),
+            &password.as_bytes().to_vec(),
+        )?;
+
+        Ok(EncryptedAspect {
+            key,
+            encrypted_data,
+        })
     }
 }
 
-#[allow(dead_code)]
-pub struct Block([u8; BLOCK_SIZE]);
+// TODO: probably better to keep track of blocks using
+// a block bitmap in the aspect header?
+#[derive(Debug)]
+pub struct Block {
+    // 0xFFFFFFFF, in case this is the last block
+    pub next_block: u32,
+    pub data: [u8; BLOCK_SIZE],
+}
+
+impl Block {
+    pub fn serialize_into<W>(&mut self, mut w: W) -> Result<()>
+    where
+        W: Write,
+    {
+        w.write_all(&self.next_block.to_be_bytes())?;
+        Ok(w.write_all(&self.data)?)
+    }
+
+    pub fn deserialize_from<R>(mut r: R) -> Result<Self>
+    where
+        R: Read,
+    {
+        let mut next_block = [0u8; 4];
+        let mut data = [0u8; BLOCK_SIZE];
+
+        r.read_exact(&mut next_block)?;
+        r.read_exact(&mut data)?;
+
+        Ok(Self {
+            next_block: u32::from_be_bytes(next_block),
+            data,
+        })
+    }
+}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct INode {
@@ -98,6 +279,10 @@ pub struct INode {
 }
 
 impl INode {
+    pub fn is_dir(&self) -> bool {
+        self.mode & libc::S_IFDIR != 0
+    }
+
     pub fn serialize_into<W>(&mut self, w: W) -> Result<()>
     where
         W: Write,

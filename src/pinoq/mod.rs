@@ -7,7 +7,7 @@ use anyhow::Result;
 use std::fs::OpenOptions;
 
 use config::Config;
-pub use file_format::{Aspect, Block, Dir, INode, SuperBlock, BLOCK_SIZE};
+pub use file_format::{Aspect, Block, Dir, EncryptedAspect, INode, SuperBlock, BLOCK_SIZE};
 pub use file_system::PinoqFs;
 
 pub fn mount(config: Config) {
@@ -27,7 +27,7 @@ pub fn mkfs(aspects: u32, blocks: u32, path: &str) -> Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
 
     let length = std::mem::size_of::<SuperBlock>()
-        + Aspect::size_of(blocks) * (aspects as usize)
+        + EncryptedAspect::size_of(blocks) * (aspects as usize)
         + std::mem::size_of::<Block>() * (blocks as usize);
     file.set_len(length as _)?;
 
@@ -37,9 +37,15 @@ pub fn mkfs(aspects: u32, blocks: u32, path: &str) -> Result<()> {
     let mut sblock = SuperBlock::new(aspects, blocks, uid, gid);
     sblock.serialize_into(&mut file)?;
 
-    for _ in 0..aspects {
+    for i in 0..aspects {
         let mut aspect = Aspect::new(blocks);
-        aspect.serialize_into(&mut file)?;
+        // if i == 0 {
+        //     aspect.block_map.set(10, true);
+        // } else {
+        //     aspect.block_map.set(2, true);
+        // }
+        let mut encrypted = aspect.to_encrypted_aspect("password")?;
+        encrypted.serialize_into(&mut file)?;
     }
 
     Ok(())

@@ -3,7 +3,7 @@ use std::fs::OpenOptions;
 use std::io::{prelude::*, Cursor, SeekFrom};
 use std::time::Duration;
 
-use crate::pinoq::{config::Config, Aspect, Block, Dir, INode, SuperBlock};
+use crate::pinoq::{config::Config, Aspect, Block, Dir, EncryptedAspect, INode, SuperBlock};
 
 use anyhow::Result;
 use bitvec::{order::Lsb0, vec::BitVec};
@@ -39,7 +39,7 @@ impl PinoqFs {
             next_block_to_alloc: 0,
             block_map: BitVec::new(),
         };
-        fs.construct_block_map()?;
+        // fs.construct_block_map()?;
         fs.init_root()?;
 
         Ok(fs)
@@ -55,20 +55,21 @@ impl PinoqFs {
     }
 
     fn get_aspect(&self, n: u32) -> Result<Aspect> {
-        let offset =
-            std::mem::size_of::<SuperBlock>() + (Aspect::size_of(self.sblock.blocks) * n as usize);
+        let offset = std::mem::size_of::<SuperBlock>()
+            + (EncryptedAspect::size_of(self.sblock.blocks) * n as usize);
 
         let mut cursor = Cursor::new(&self.mmap);
         cursor.seek(SeekFrom::Start(offset as _))?;
 
-        Aspect::deserialize_from(cursor, self.sblock.blocks)
+        let encrypted = EncryptedAspect::deserialize_from(cursor)?;
+        Aspect::from_encrypted_aspect(encrypted, "password")
     }
 
     // TODO: move to mkfs
     fn init_root(&mut self) -> Result<()> {
         log::debug!("Initializing Root Directory");
 
-        let mut aspect = self.get_aspect(self.config.current_aspect)?;
+        let mut aspect = self.get_aspect(self.config.current.aspect)?;
         // TODO: root inodes other than 0
         if *aspect.block_map.get(0).as_deref().unwrap_or(&false) {
             log::debug!("Already have a root");
@@ -98,9 +99,7 @@ impl PinoqFs {
         let dir = Dir::default();
         self.save_dir(dir, data_block_idx)?;
 
-        self.save_aspect(aspect, self.config.current_aspect)?;
-
-        Ok(())
+        self.save_aspect(aspect, self.config.current.aspect)
     }
 
     fn save_dir(&mut self, mut dir: Dir, n: u32) -> Result<()> {
@@ -122,13 +121,13 @@ impl PinoqFs {
     }
 
     fn save_aspect(&mut self, mut aspect: Aspect, n: u32) -> Result<()> {
-        let offset = std::mem::size_of::<SuperBlock>()
-            + Aspect::size_of(self.sblock.blocks) as usize * n as usize;
+        let offset = self.aspect_offset(n);
 
         let mut cursor = Cursor::new(self.mmap.as_mut());
         cursor.seek(SeekFrom::Start(offset as _))?;
 
-        aspect.serialize_into(&mut cursor)
+        let mut encrypted = aspect.to_encrypted_aspect(&self.config.current.password)?;
+        encrypted.serialize_into(&mut cursor)
     }
 
     fn get_inode_from_block(&self, n: u32) -> Result<INode> {
@@ -144,7 +143,7 @@ impl PinoqFs {
         log::debug!("Getting Directory From Inode {}", n);
 
         let node = self.get_inode_from_block(n)?;
-        if node.mode & libc::S_IFDIR == 0 {
+        if !node.is_dir() {
             return Err(anyhow::anyhow!("No such directory"));
         }
 
@@ -156,8 +155,13 @@ impl PinoqFs {
 
     fn block_offset(&self, n: u32) -> usize {
         std::mem::size_of::<SuperBlock>()
-            + Aspect::size_of(self.sblock.blocks) * (self.sblock.aspects as usize)
+            + EncryptedAspect::size_of(self.sblock.blocks) * (self.sblock.aspects as usize)
             + std::mem::size_of::<Block>() * (n as usize)
+    }
+
+    fn aspect_offset(&self, n: u32) -> usize {
+        std::mem::size_of::<SuperBlock>()
+            + EncryptedAspect::size_of(self.sblock.blocks) as usize * n as usize
     }
 }
 
@@ -194,7 +198,7 @@ impl Filesystem for PinoqFs {
 
                 for (name, ino) in dir.entries {
                     if let Ok(node) = self.get_inode_from_block(ino) {
-                        let kind = if node.mode & libc::S_IFDIR == 0 {
+                        let kind = if !node.is_dir() {
                             fuser::FileType::RegularFile
                         } else {
                             fuser::FileType::Directory

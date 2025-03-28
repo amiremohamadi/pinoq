@@ -1,6 +1,6 @@
-# Don't rely on this configuration file as it's under heavy development
-# Check out `src/pinoq/file_system.rs` instead.
-
 disk = "./volume.pnoq"
 mount = "/tmp/pinoq"
-current_aspect = 0
+
+[current]
+aspect = 0
+password = "password"
