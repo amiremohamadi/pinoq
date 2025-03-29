@@ -39,11 +39,6 @@ pub fn mkfs(aspects: u32, blocks: u32, path: &str) -> Result<()> {
 
     for i in 0..aspects {
         let mut aspect = Aspect::new(blocks);
-        // if i == 0 {
-        //     aspect.block_map.set(10, true);
-        // } else {
-        //     aspect.block_map.set(2, true);
-        // }
         let mut encrypted = aspect.to_encrypted_aspect("password")?;
         encrypted.serialize_into(&mut file)?;
     }

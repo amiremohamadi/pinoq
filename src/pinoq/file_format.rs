@@ -4,9 +4,8 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
 use bitvec::{order::Lsb0, vec::BitVec};
-use crypto::buffer::{BufferResult, ReadBuffer, WriteBuffer};
-use crypto::{aes, blockmodes, buffer};
 use fuser::{FileAttr, FileType};
+use openssl::symm::{Cipher, Crypter, Mode};
 use serde::{Deserialize, Serialize};
 
 const IV_LEN: usize = 16;
@@ -24,71 +23,37 @@ fn random_key() -> Key {
 }
 
 fn decrypt(encrypted_data: &[u8], key: &Key, password: &str) -> Result<Vec<u8>> {
-    let mut decryptor = aes::cbc_decryptor(
-        aes::KeySize::KeySize256,
-        &key.0[..],
-        &password.as_bytes().to_vec(),
-        blockmodes::PkcsPadding,
-    );
+    let mut iv = password.as_bytes().to_vec();
+    iv.resize(IV_LEN, 0);
 
-    let mut final_result = Vec::<u8>::new();
-    let mut read_buffer = buffer::RefReadBuffer::new(encrypted_data);
-    let mut buffer = [0; 8192];
-    let mut write_buffer = buffer::RefWriteBuffer::new(&mut buffer);
+    let cipher = Cipher::aes_256_cbc();
+    let mut decrypter = Crypter::new(cipher, Mode::Decrypt, &key.0, Some(&iv)).unwrap();
 
-    loop {
-        let result = decryptor
-            .decrypt(&mut read_buffer, &mut write_buffer, true)
-            .unwrap();
-        final_result.extend(
-            write_buffer
-                .take_read_buffer()
-                .take_remaining()
-                .iter()
-                .cloned(),
-        );
-        match result {
-            BufferResult::BufferUnderflow => break,
-            BufferResult::BufferOverflow => {}
-        }
-    }
+    let block_size = cipher.block_size();
+    let mut decrypted_data = vec![0; encrypted_data.len() + block_size];
+    let count = decrypter
+        .update(encrypted_data, &mut decrypted_data)
+        .unwrap();
+    let rest = decrypter.finalize(&mut decrypted_data[count..]).unwrap();
+    decrypted_data.truncate(count + rest);
 
-    Ok(final_result)
+    Ok(decrypted_data)
 }
 
-fn encrypt(data: &[u8], key: &Vec<u8>, iv: &Vec<u8>) -> Result<Vec<u8>> {
-    let mut encryptor = aes::cbc_encryptor(
-        aes::KeySize::KeySize256,
-        &key[..],
-        &iv[..],
-        blockmodes::PkcsPadding,
-    );
+fn encrypt(data: &[u8], key: &Vec<u8>, password: &Vec<u8>) -> Result<Vec<u8>> {
+    let mut iv = password.clone();
+    iv.resize(IV_LEN, 0);
 
-    let mut final_result = Vec::<u8>::new();
-    let mut read_buffer = buffer::RefReadBuffer::new(data);
-    let mut buffer = [0; 8192];
-    let mut write_buffer = buffer::RefWriteBuffer::new(&mut buffer);
+    let cipher = Cipher::aes_256_cbc();
+    let mut encrypter = Crypter::new(cipher, Mode::Encrypt, key, Some(&iv)).unwrap();
 
-    loop {
-        let result = encryptor
-            .encrypt(&mut read_buffer, &mut write_buffer, true)
-            .unwrap();
+    let block_size = cipher.block_size();
+    let mut encrypted_data = vec![0; data.len() + block_size];
+    let count = encrypter.update(data, &mut encrypted_data).unwrap();
+    let rest = encrypter.finalize(&mut encrypted_data[count..]).unwrap();
+    encrypted_data.truncate(count + rest);
 
-        final_result.extend(
-            write_buffer
-                .take_read_buffer()
-                .take_remaining()
-                .iter()
-                .cloned(),
-        );
-
-        match result {
-            BufferResult::BufferUnderflow => break,
-            BufferResult::BufferOverflow => {}
-        }
-    }
-
-    Ok(final_result)
+    Ok(encrypted_data)
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -184,23 +149,6 @@ impl Aspect {
     {
         Ok(w.write_all(self.block_map.as_raw_slice())?)
     }
-
-    //     pub fn deserialize_from<R>(mut r: R, n: u32) -> Result<Self>
-    //     where
-    //         R: Read,
-    //     {
-    //         let mut buf = vec![0u8; n as usize];
-    //         r.read_exact(&mut buf)?;
-    //         Ok(Self {
-    //             key: random_key(), // FIXME
-    //             block_map: BitVec::<u8, Lsb0>::from_slice(&buf),
-    //         })
-    //     }
-
-    // pub fn size_of(blocks: u32) -> usize {
-    //     blocks as usize
-    //     // (blocks / 8) as usize
-    // }
 
     pub fn from_encrypted_aspect(ea: EncryptedAspect, password: &str) -> Result<Self> {
         let raw_data = decrypt(&ea.encrypted_data, &ea.key, password)?;
