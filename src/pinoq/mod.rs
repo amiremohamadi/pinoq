@@ -34,12 +34,12 @@ pub fn mkfs(aspects: u32, blocks: u32, path: &str) -> Result<()> {
     let uid = unsafe { libc::getuid() };
     let gid = unsafe { libc::getgid() };
 
-    let mut sblock = SuperBlock::new(aspects, blocks, uid, gid);
+    let sblock = SuperBlock::new(aspects, blocks, uid, gid);
     sblock.serialize_into(&mut file)?;
 
-    for i in 0..aspects {
-        let mut aspect = Aspect::new(blocks);
-        let mut encrypted = aspect.to_encrypted_aspect("password")?;
+    for _ in 0..aspects {
+        let aspect = Aspect::new(blocks);
+        let encrypted = aspect.to_encrypted_aspect("password")?;
         encrypted.serialize_into(&mut file)?;
     }
 
