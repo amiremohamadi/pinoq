@@ -23,7 +23,7 @@ pub fn mount(config: Config) {
     );
 }
 
-pub fn mkfs(aspects: u32, blocks: u32, path: &str) -> Result<()> {
+pub fn mkfs(aspects: u32, blocks: u32, path: &str, pass: &str) -> Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
 
     let length = std::mem::size_of::<SuperBlock>()
@@ -39,7 +39,7 @@ pub fn mkfs(aspects: u32, blocks: u32, path: &str) -> Result<()> {
 
     for _ in 0..aspects {
         let aspect = Aspect::new(blocks);
-        let encrypted = aspect.to_encrypted_aspect("password")?;
+        let encrypted = aspect.to_encrypted_aspect(pass)?;
         encrypted.serialize_into(&mut file)?;
     }
 

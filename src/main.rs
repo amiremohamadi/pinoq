@@ -12,15 +12,13 @@ struct Args {
     /// Create a pinoq volume with the specified size
     #[clap(
         long("mkfs"),
-        num_args = 2,
-        value_names = ["ASPECTS", "BLOCKS"],
-        requires = "path"
+        num_args = 4,
+        value_names = ["ASPECTS", "BLOCKS", "PATH", "PASSWORD"],
     )]
-    file_system_size: Option<Vec<u32>>,
-    path: Option<String>,
+    mkfs: Vec<String>,
     /// Inspect information from a pinoq disk
-    #[clap(long, requires = "path")]
-    inspect: bool,
+    #[clap(long("inspect"), value_names = ["PATH"])]
+    inspect_path: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -35,14 +33,12 @@ fn main() -> anyhow::Result<()> {
             _ => panic!("Couldn't find the file"),
         }?;
         pinoq::mount(config);
-    } else if let Some(path) = args.path {
-        if let Some(size) = args.file_system_size {
-            let (aspects, blocks) = (size[0], size[1]);
-            pinoq::mkfs(aspects, blocks, &path)?;
-        }
-        if args.inspect {
-            pinoq::inspect(&path)?;
-        }
+    } else if args.mkfs.len() > 0 {
+        let aspects = args.mkfs[0].parse::<u32>()?;
+        let blocks = args.mkfs[1].parse::<u32>()?;
+        pinoq::mkfs(aspects, blocks, &args.mkfs[2], &args.mkfs[3])?;
+    } else if let Some(path) = args.inspect_path {
+        pinoq::inspect(&path)?;
     }
 
     Ok(())

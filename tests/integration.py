@@ -29,7 +29,7 @@ class Integration(unittest.TestCase):
         self.directory = '/tmp/pinoq/'
         self.config_path = '/tmp/pinoq.toml'
         self.disk = '/tmp/volume.pnoq'
-        subprocess.run([PINOQ_BIN, '--mkfs', '2', '1024', self.disk])
+        subprocess.run([PINOQ_BIN, '--mkfs', '2', '1024', self.disk, 'password'])
 
     def test_pinoq_mount_sanity(self):
         config = Config(self.disk, self.directory, 1, 'password')

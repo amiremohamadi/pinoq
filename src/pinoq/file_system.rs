@@ -75,7 +75,8 @@ impl PinoqFs {
         cursor.seek(SeekFrom::Start(offset as _))?;
 
         let encrypted = EncryptedAspect::deserialize_from(cursor)?;
-        Aspect::from_encrypted_aspect(encrypted, "password")
+        // TODO: provide a way to ask for each aspect's password
+        Aspect::from_encrypted_aspect(encrypted, &self.config.current.password)
     }
 
     fn allocate_block(&mut self) -> Result<usize> {
