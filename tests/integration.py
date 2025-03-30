@@ -41,39 +41,39 @@ class Integration(unittest.TestCase):
         files = os.listdir(self.directory)
         self.assertIn('test.txt', files, 'File does not exist')
 
-    # def test_pinoq_multiple_aspects(self):
-    #     # trying the second aspect
-    #     config = Config(self.disk, self.directory, 1, 'password')
-    #     with open(self.config_path, 'w') as file:
-    #         file.write(str(config))
-    #     self.run_pinoq()
+    def test_pinoq_multiple_aspects(self):
+        # trying the second aspect
+        config = Config(self.disk, self.directory, 1, 'password')
+        with open(self.config_path, 'w') as file:
+            file.write(str(config))
+        self.run_pinoq()
 
-    #     self.create_file('first.txt')
-    #     files = os.listdir(self.directory)
-    #     self.assertIn('first.txt', files, 'File does not exist')
+        self.create_file('first.txt')
+        files = os.listdir(self.directory)
+        self.assertIn('first.txt', files, 'File does not exist')
 
-    #     # trying the first aspect
-    #     config = Config(self.disk, self.directory, 0, 'password')
-    #     with open(self.config_path, 'w') as file:
-    #         file.write(str(config))
-    #     self.run_pinoq()
+        # trying the first aspect
+        config = Config(self.disk, self.directory, 0, 'password')
+        with open(self.config_path, 'w') as file:
+            file.write(str(config))
+        self.run_pinoq()
 
-    #     files = os.listdir(self.directory)
-    #     self.assertEqual(len(files), 0, 'The aspect is corrupted')
-    #     self.create_file('second.txt')
-    #     files = os.listdir(self.directory)
-    #     self.assertEqual(['second.txt'], files, 'The aspect is corrupted')
+        files = os.listdir(self.directory)
+        self.assertEqual(len(files), 0, 'The aspect is corrupted')
+        self.create_file('second.txt')
+        files = os.listdir(self.directory)
+        self.assertEqual(['second.txt'], files, 'The aspect is corrupted')
 
-    #     # again trying the second aspect to make sure
-    #     # we don't have access to other aspects' files
-    #     config = Config(self.disk, self.directory, 1, 'password')
-    #     with open(self.config_path, 'w') as file:
-    #         file.write(str(config))
-    #     self.run_pinoq()
+        # again trying the second aspect to make sure
+        # we don't have access to other aspects' files
+        config = Config(self.disk, self.directory, 1, 'password')
+        with open(self.config_path, 'w') as file:
+            file.write(str(config))
+        self.run_pinoq()
 
-    #     files = os.listdir(self.directory)
-    #     self.assertIn('first.txt', files, 'File does not exist')
-    #     self.assertNotIn('second.txt', files, 'The aspect is corrupted')
+        files = os.listdir(self.directory)
+        self.assertIn('first.txt', files, 'File does not exist')
+        self.assertNotIn('second.txt', files, 'The aspect is corrupted')
 
     def create_file(self, name):
         subprocess.run(['touch', self.directory + name],
@@ -84,8 +84,7 @@ class Integration(unittest.TestCase):
             os.kill(self.pid, signal.SIGTERM)
             time.sleep(2)
         process = subprocess.Popen([PINOQ_BIN, '--mount', self.config_path],
-                                   )
-                                   # stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.pid = process.pid
         time.sleep(2)
 
