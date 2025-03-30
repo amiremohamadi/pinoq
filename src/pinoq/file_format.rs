@@ -13,8 +13,8 @@ const KEY_LEN: usize = 32;
 const MAGIC: u32 = 0x504E4F51u32;
 pub const BLOCK_SIZE: usize = 1 << 10;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct Key([u8; KEY_LEN]);
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct Key([u8; KEY_LEN]);
 
 fn random_key() -> Key {
     let mut k = [0; KEY_LEN];
@@ -40,12 +40,12 @@ fn decrypt(encrypted_data: &[u8], key: &Key, password: &str) -> Result<Vec<u8>> 
     Ok(decrypted_data)
 }
 
-fn encrypt(data: &[u8], key: &Vec<u8>, password: &Vec<u8>) -> Result<Vec<u8>> {
+fn encrypt(data: &[u8], key: &Key, password: &Vec<u8>) -> Result<Vec<u8>> {
     let mut iv = password.clone();
     iv.resize(IV_LEN, 0);
 
     let cipher = Cipher::aes_256_cbc();
-    let mut encrypter = Crypter::new(cipher, Mode::Encrypt, key, Some(&iv)).unwrap();
+    let mut encrypter = Crypter::new(cipher, Mode::Encrypt, &key.0, Some(&iv)).unwrap();
 
     let block_size = cipher.block_size();
     let mut encrypted_data = vec![0; data.len() + block_size];
@@ -76,7 +76,7 @@ impl SuperBlock {
         }
     }
 
-    pub fn serialize_into<W>(&mut self, w: W) -> Result<()>
+    pub fn serialize_into<W>(&self, w: W) -> Result<()>
     where
         W: Write,
     {
@@ -99,7 +99,7 @@ pub struct EncryptedAspect {
 }
 
 impl EncryptedAspect {
-    pub fn serialize_into<W>(&mut self, w: W) -> Result<()>
+    pub fn serialize_into<W>(&self, w: W) -> Result<()>
     where
         W: Write,
     {
@@ -119,10 +119,11 @@ impl EncryptedAspect {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Aspect {
     // to encrypt/decrypt the blocks
     pub key: Key,
+    pub root_block: u32,
     pub block_map: BitVec<u8, Lsb0>,
 }
 
@@ -130,35 +131,39 @@ impl Aspect {
     pub fn new(blocks: u32) -> Self {
         Self {
             key: random_key(),
+            root_block: 0xFFFFFFFF, // we consider 0xFFFFFFFF as uninitialized
             block_map: BitVec::repeat(false, blocks as _),
         }
+    }
+
+    pub fn has_root_block(&self) -> bool {
+        self.root_block != 0xFFFFFFFF
     }
 
     pub fn serialize(&self) -> Result<Vec<u8>> {
         let mut buf = vec![];
 
         buf.extend_from_slice(&self.key.0);
+        buf.extend_from_slice(&self.root_block.to_be_bytes());
         buf.extend_from_slice(&self.block_map.as_raw_slice());
 
         Ok(buf)
     }
 
-    pub fn serialize_into<W>(&mut self, mut w: W) -> Result<()>
-    where
-        W: Write,
-    {
-        Ok(w.write_all(self.block_map.as_raw_slice())?)
-    }
-
     pub fn from_encrypted_aspect(ea: EncryptedAspect, password: &str) -> Result<Self> {
-        let raw_data = decrypt(&ea.encrypted_data, &ea.key, password)?;
+        let decrypted = decrypt(&ea.encrypted_data, &ea.key, password)?;
 
-        let mut k = [0u8; KEY_LEN];
-        k.copy_from_slice(&raw_data[..KEY_LEN]);
+        let mut kbuf = [0u8; KEY_LEN];
+        kbuf.copy_from_slice(&decrypted[..KEY_LEN]);
+
+        const BUF_LEN: usize = 4;
+        let mut bbuf = [0u8; BUF_LEN];
+        bbuf.copy_from_slice(&decrypted[KEY_LEN..KEY_LEN + BUF_LEN]);
 
         Ok(Self {
-            key: Key(k), // FIXME
-            block_map: BitVec::<u8, Lsb0>::from_slice(&raw_data[KEY_LEN..]),
+            key: Key(kbuf), // FIXME
+            root_block: u32::from_be_bytes(bbuf),
+            block_map: BitVec::<u8, Lsb0>::from_slice(&decrypted[KEY_LEN + BUF_LEN..]),
         })
     }
 
@@ -168,11 +173,7 @@ impl Aspect {
         // should use PBKDF in the future and fill the IV with random data
         let encoded = self.serialize()?;
         // make sure password contains at most IV_LEN bytes
-        let encrypted_data = encrypt(
-            encoded.as_slice(),
-            &key.0.to_vec(),
-            &password.as_bytes().to_vec(),
-        )?;
+        let encrypted_data = encrypt(encoded.as_slice(), &key, &password.as_bytes().to_vec())?;
 
         Ok(EncryptedAspect {
             key,
@@ -191,7 +192,7 @@ pub struct Block {
 }
 
 impl Block {
-    pub fn serialize_into<W>(&mut self, mut w: W) -> Result<()>
+    pub fn serialize_into<W>(&self, mut w: W) -> Result<()>
     where
         W: Write,
     {
@@ -231,7 +232,7 @@ impl INode {
         self.mode & libc::S_IFDIR != 0
     }
 
-    pub fn serialize_into<W>(&mut self, w: W) -> Result<()>
+    pub fn serialize_into<W>(&self, w: W) -> Result<()>
     where
         W: Write,
     {
@@ -279,7 +280,7 @@ pub struct Dir {
 }
 
 impl Dir {
-    pub fn serialize_into<W>(&mut self, w: W) -> Result<()>
+    pub fn serialize_into<W>(&self, w: W) -> Result<()>
     where
         W: Write,
     {
