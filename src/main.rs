@@ -4,7 +4,7 @@ use clap::Parser;
 use pinoq::config::Config;
 
 #[derive(Debug, Parser)]
-#[clap(version)]
+#[command(version, arg_required_else_help = true)]
 struct Args {
     /// Mount a volume based on specified config
     #[clap(long("mount"))]
@@ -18,6 +18,9 @@ struct Args {
     )]
     file_system_size: Option<Vec<u32>>,
     path: Option<String>,
+    /// Inspect information from a pinoq disk
+    #[clap(long, requires = "path")]
+    inspect: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -32,9 +35,14 @@ fn main() -> anyhow::Result<()> {
             _ => panic!("Couldn't find the file"),
         }?;
         pinoq::mount(config);
-    } else if let (Some(size), Some(path)) = (args.file_system_size, args.path) {
-        let (aspects, blocks) = (size[0], size[1]);
-        pinoq::mkfs(aspects, blocks, &path)?;
+    } else if let Some(path) = args.path {
+        if let Some(size) = args.file_system_size {
+            let (aspects, blocks) = (size[0], size[1]);
+            pinoq::mkfs(aspects, blocks, &path)?;
+        }
+        if args.inspect {
+            pinoq::inspect(&path)?;
+        }
     }
 
     Ok(())

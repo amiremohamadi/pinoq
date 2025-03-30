@@ -45,3 +45,12 @@ pub fn mkfs(aspects: u32, blocks: u32, path: &str) -> Result<()> {
 
     Ok(())
 }
+
+pub fn inspect(path: &str) -> Result<()> {
+    let sblock = PinoqFs::inspect(path)?;
+    println!(
+        r#"{{"path": "{}", "magic": "{:#X}", "aspects": {}, "blocks": {}}}"#,
+        path, sblock.magic, sblock.aspects, sblock.blocks
+    );
+    Ok(())
+}

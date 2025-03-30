@@ -45,6 +45,11 @@ impl PinoqFs {
         Ok(fs)
     }
 
+    pub fn inspect(path: &str) -> Result<SuperBlock> {
+        let mut disk = OpenOptions::new().read(true).open(path)?;
+        SuperBlock::deserialize_from(&mut disk)
+    }
+
     fn construct_block_map(&mut self) -> Result<()> {
         log::debug!("Constructing Block Map for {} Aspects", self.sblock.aspects);
         self.block_map = BitVec::repeat(false, self.sblock.blocks as _);
