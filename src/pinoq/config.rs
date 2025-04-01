@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use crate::pinoq::error::{PinoqError, Result};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -18,7 +18,7 @@ impl Config {
     pub fn new(config: &str) -> Result<Self> {
         match toml::from_str(config) {
             Ok(c) => Ok(c),
-            Err(e) => Err(anyhow!("Couldn't parse config file: {}", e)),
+            Err(_) => Err(PinoqError::InvalidConfig),
         }
     }
 }

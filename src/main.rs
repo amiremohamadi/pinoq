@@ -21,12 +21,9 @@ struct Args {
     inspect_path: Option<String>,
 }
 
-fn main() -> anyhow::Result<()> {
-    pretty_env_logger::formatted_builder()
-        .parse_filters("DEBUG")
-        .init();
-
+fn parse_args() -> anyhow::Result<()> {
     let args = Args::parse();
+
     if let Some(path) = args.config_path {
         let config = match std::fs::read_to_string(path) {
             Ok(c) => Config::new(&c),
@@ -42,4 +39,15 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn main() {
+    pretty_env_logger::formatted_builder()
+        .parse_filters("DEBUG")
+        .init();
+
+    if let Err(e) = parse_args() {
+        eprintln!("pionq: {:?}", e);
+        std::process::exit(1);
+    }
 }
