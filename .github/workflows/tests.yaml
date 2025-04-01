@@ -7,7 +7,20 @@ on:
   pull_request:
 
 jobs:
-  build-and-test:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y fuse3 libfuse-dev
+
+      - name: Unit Tests
+        run: cargo test --verbose
+
+  integration-tests:
     runs-on: ubuntu-latest
 
     steps:
