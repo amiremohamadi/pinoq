@@ -8,7 +8,7 @@ pub use fs::PinoqFs;
 
 use config::Config;
 use error::{PinoqError, Result};
-use filefmt::{Aspect, Block, EncryptedAspect, PinoqSerialize, SuperBlock};
+use filefmt::{Aspect, EncryptedAspect, PinoqSerialize, SuperBlock, BLOCK_SIZE};
 
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -17,7 +17,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 fn get_block_offset(aspects: u32, blocks: u32, n: u32) -> usize {
     std::mem::size_of::<SuperBlock>()
         + EncryptedAspect::size_of(blocks) * (aspects as usize)
-        + std::mem::size_of::<Block>() * (n as usize)
+        + BLOCK_SIZE * (n as usize)
+    // + std::mem::size_of::<Block>() * (n as usize)
 }
 
 #[inline]
@@ -118,7 +119,6 @@ mod tests {
         let blocks = 256;
 
         let sblock_len = std::mem::size_of::<SuperBlock>();
-        let block_len = std::mem::size_of::<Block>();
         let aspect_len = EncryptedAspect::size_of(blocks);
 
         let offset = get_aspect_offset(blocks, 0);
@@ -131,7 +131,7 @@ mod tests {
         let offset = get_block_offset(aspects, blocks, 1);
         assert_eq!(
             offset,
-            sblock_len + aspect_len * (aspects as usize) + block_len
+            sblock_len + aspect_len * (aspects as usize) + BLOCK_SIZE
         );
     }
 }

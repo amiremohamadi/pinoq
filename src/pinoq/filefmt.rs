@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::time::UNIX_EPOCH;
 
 use crate::pinoq::encryption::*;
@@ -15,6 +15,29 @@ const MAGIC: u32 = 0x504E4F51u32;
 pub trait PinoqSerialize: Sized {
     fn serialize_into<W: Write>(&self, w: W) -> Result<()>;
     fn deserialize_from<R: Read>(r: R) -> Result<Self>;
+}
+
+pub fn to_encrypted_block<T>(t: &T, key: &Key, n: u32) -> Result<EncryptedBlock>
+where
+    T: PinoqSerialize,
+{
+    let mut buf = Cursor::new(Vec::new());
+    t.serialize_into(&mut buf)?;
+
+    let iv = IV::from_bytes(&n.to_be_bytes());
+    let enc_buf = encrypt(&buf.into_inner(), key, &iv);
+
+    Ok(EncryptedBlock(enc_buf))
+}
+
+pub fn from_encrypted_block<T>(eb: &EncryptedBlock, key: &Key, n: u32) -> Result<T>
+where
+    T: PinoqSerialize,
+{
+    let iv = IV::from_bytes(&n.to_be_bytes());
+    let buf = decrypt(&eb.0, key, &iv);
+    let buf = Cursor::new(buf);
+    T::deserialize_from(buf)
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -116,7 +139,8 @@ impl Aspect {
     }
 
     pub fn from_encrypted_aspect(ea: EncryptedAspect, password: &str) -> Result<Self> {
-        let decrypted = decrypt(&ea.encrypted_data, &ea.key, password);
+        let iv = IV::from_bytes(password.as_bytes());
+        let decrypted = decrypt(&ea.encrypted_data, &ea.key, &iv);
 
         let mut kbuf = [0u8; KEY_LEN];
         kbuf.copy_from_slice(&decrypted[..KEY_LEN]);
@@ -137,8 +161,8 @@ impl Aspect {
         // TODO: currently we're using password as IV (init vector)
         // should use PBKDF in the future and fill the IV with random data
         let encoded = self.serialize();
-        // make sure password contains at most IV_LEN bytes
-        let encrypted_data = encrypt(encoded.as_slice(), &key, &password);
+        let iv = IV::from_bytes(password.as_bytes());
+        let encrypted_data = encrypt(encoded.as_slice(), &key, &iv);
 
         EncryptedAspect {
             key,
@@ -147,39 +171,37 @@ impl Aspect {
     }
 }
 
-// TODO: probably better to keep track of blocks using
-// a block bitmap in the aspect header?
+// TODO: must raise an error in case the inner data length is larger than BLOCK_SIZE
+// otherwise we'll have overlapping blocks which leads to data corruption
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EncryptedBlock(pub Vec<u8>);
+
+impl PinoqSerialize for EncryptedBlock {
+    fn serialize_into<W>(&self, w: W) -> Result<()>
+    where
+        W: Write,
+    {
+        // bincode: 4 bytes for len + data
+        assert!(
+            self.0.len() <= BLOCK_SIZE - std::mem::size_of::<usize>(),
+            "block overflow"
+        );
+        bincode::serialize_into(w, self).map_err(|e| e.into())
+    }
+
+    fn deserialize_from<R>(r: R) -> Result<Self>
+    where
+        R: Read,
+    {
+        bincode::deserialize_from(r).map_err(|e| e.into())
+    }
+}
+
 #[derive(Debug)]
 pub struct Block {
     // 0xFFFFFFFF, in case this is the last block
     pub next_block: u32,
-    pub data: [u8; BLOCK_SIZE],
-}
-
-impl PinoqSerialize for Block {
-    fn serialize_into<W>(&self, mut w: W) -> Result<()>
-    where
-        W: Write,
-    {
-        w.write_all(&self.next_block.to_be_bytes())?;
-        Ok(w.write_all(&self.data)?)
-    }
-
-    fn deserialize_from<R>(mut r: R) -> Result<Self>
-    where
-        R: Read,
-    {
-        let mut next_block = [0u8; 4];
-        let mut data = [0u8; BLOCK_SIZE];
-
-        r.read_exact(&mut next_block)?;
-        r.read_exact(&mut data)?;
-
-        Ok(Self {
-            next_block: u32::from_be_bytes(next_block),
-            data,
-        })
-    }
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -207,10 +229,9 @@ impl INode {
     }
 
     pub fn as_attr(&self, n: u32) -> FileAttr {
-        let kind = if self.mode & libc::S_IFDIR != 0 {
-            FileType::Directory
-        } else {
-            FileType::RegularFile
+        let kind = match self.mode & libc::S_IFDIR {
+            0 => FileType::RegularFile,
+            _ => FileType::Directory,
         };
 
         FileAttr {
@@ -268,5 +289,26 @@ impl PinoqSerialize for Dir {
         R: Read,
     {
         bincode::deserialize_from(r).map_err(|e| e.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encrypted_block() {
+        let mut dir = Dir::default();
+        dir.entries.insert("name".to_string(), 123);
+
+        let key = Key([1; KEY_LEN]);
+        let enc_block = to_encrypted_block(&dir, &key, 69).unwrap();
+
+        let dir = from_encrypted_block::<Dir>(&enc_block, &key, 69).unwrap();
+        assert_eq!(dir.entries.get("name"), Some(&123));
+
+        // invalid block number
+        let result = from_encrypted_block::<Dir>(&enc_block, &key, 88);
+        assert!(result.is_err());
     }
 }
