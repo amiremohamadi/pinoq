@@ -7,7 +7,10 @@ use std::time::Duration;
 use crate::pinoq::{
     config::Config,
     error::{PinoqError, Result},
-    filefmt::{Aspect, Dir, INode, PinoqSerialize, SuperBlock, BLOCK_SIZE},
+    filefmt::{
+        from_encrypted_block, to_encrypted_block, Aspect, Dir, EncryptedBlock, INode,
+        PinoqSerialize, SuperBlock, BLOCK_SIZE,
+    },
 };
 
 use bitvec::{order::Lsb0, vec::BitVec};
@@ -103,9 +106,9 @@ impl PinoqFs {
         root_node.data_block = data_block_index as _;
 
         let directory = Dir::default();
-        self.save_to_block(&root_node, root_block_index as _)?;
-        self.save_to_block(&directory, data_block_index as _)?;
-        self.save_aspect(self.aspect.clone(), self.config.current.aspect)
+        self.store_to_block(&root_node, root_block_index as _)?;
+        self.store_to_block(&directory, data_block_index as _)?;
+        self.store_aspect(self.aspect.clone(), self.config.current.aspect)
     }
 
     fn get_directory_content(&self, inode: u64) -> Result<BTreeMap<String, u32>> {
@@ -140,13 +143,13 @@ impl PinoqFs {
 
         let name = name.to_str().unwrap();
         dir.entries.insert(name.to_owned(), node_block_index as _);
-        self.save_to_block(&parent, inode as _)?;
-        self.save_to_block(&dir, parent.data_block as _)?;
+        self.store_to_block(&parent, inode as _)?;
+        self.store_to_block(&dir, parent.data_block as _)?;
 
         self.aspect.block_map.set(node_block_index, true);
-        self.save_aspect(self.aspect.clone(), self.config.current.aspect)?;
+        self.store_aspect(self.aspect.clone(), self.config.current.aspect)?;
 
-        self.save_to_block(&node, node_block_index as _)?;
+        self.store_to_block(&node, node_block_index as _)?;
         Ok(node.as_attr(node_block_index as _))
     }
 
@@ -172,7 +175,7 @@ impl PinoqFs {
         Ok(entries)
     }
 
-    fn save_to_block<T>(&mut self, t: &T, n: u32) -> Result<()>
+    fn store_to_block<T>(&mut self, t: &T, n: u32) -> Result<()>
     where
         T: PinoqSerialize,
     {
@@ -183,7 +186,8 @@ impl PinoqFs {
             .seek(SeekFrom::Start(offset as _))
             .map_err(|e| PinoqError::IO(e))?;
 
-        t.serialize_into(&mut cursor)
+        let eb = to_encrypted_block(t, &self.aspect.key, n)?;
+        eb.serialize_into(&mut cursor)
     }
 
     fn get_from_block<T>(&self, n: u32) -> Result<T>
@@ -195,7 +199,8 @@ impl PinoqFs {
             .seek(SeekFrom::Start(self.get_block_offset(n) as _))
             .map_err(|e| PinoqError::IO(e))?;
 
-        T::deserialize_from(cursor)
+        let eb = EncryptedBlock::deserialize_from(cursor)?;
+        from_encrypted_block::<T>(&eb, &self.aspect.key, n)
     }
 
     /// fuse returns `1` for root inode
@@ -215,7 +220,7 @@ impl PinoqFs {
         crate::pinoq::decrypt_aspect(cursor, offset, &self.config.current.password)
     }
 
-    fn save_aspect(&mut self, aspect: Aspect, n: u32) -> Result<()> {
+    fn store_aspect(&mut self, aspect: Aspect, n: u32) -> Result<()> {
         let offset = self.get_aspect_offset(n);
         let cursor = Cursor::new(self.mmap.as_mut());
         // TODO: provide a way to ask for each aspect's password
