@@ -75,9 +75,31 @@ class Integration(unittest.TestCase):
         self.assertIn('first.txt', files, 'File does not exist')
         self.assertNotIn('second.txt', files, 'The aspect is corrupted')
 
+    def test_pinoq_read_write(self):
+        config = Config(self.disk, self.directory, 1, 'password')
+        with open(self.config_path, 'w') as file:
+            file.write(str(config))
+        self.run_pinoq()
+
+        self.write_to_file('test.txt',
+                           'the quick brown fox jumps over the lazy dog')
+        files = os.listdir(self.directory)
+        self.assertIn('test.txt', files, 'File does not exist')
+
+        data = self.read_from_file('test.txt')
+        self.assertEqual(data, 'the quick brown fox jumps over the lazy dog')
+
     def create_file(self, name):
         subprocess.run(['touch', self.directory + name],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def write_to_file(self, name, data):
+        with open(self.directory + name, 'w') as file:
+            subprocess.run(['echo', '-n', data], stdout=file)
+
+    def read_from_file(self, name):
+        with open(self.directory + name) as file:
+            return file.read()
 
     def run_pinoq(self):
         if self.pid:

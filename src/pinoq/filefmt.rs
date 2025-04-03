@@ -184,7 +184,8 @@ impl PinoqSerialize for EncryptedBlock {
         // bincode: 4 bytes for len + data
         assert!(
             self.0.len() <= BLOCK_SIZE - std::mem::size_of::<usize>(),
-            "block overflow"
+            "block overflow {}",
+            self.0.len()
         );
         bincode::serialize_into(w, self).map_err(|e| e.into())
     }
@@ -197,11 +198,27 @@ impl PinoqSerialize for EncryptedBlock {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Block {
     // 0xFFFFFFFF, in case this is the last block
     pub next_block: u32,
     pub data: Vec<u8>,
+}
+
+impl PinoqSerialize for Block {
+    fn serialize_into<W>(&self, w: W) -> Result<()>
+    where
+        W: Write,
+    {
+        bincode::serialize_into(w, self).map_err(|e| e.into())
+    }
+
+    fn deserialize_from<R>(r: R) -> Result<Self>
+    where
+        R: Read,
+    {
+        bincode::deserialize_from(r).map_err(|e| e.into())
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -227,6 +244,19 @@ impl INode {
     pub fn is_dir(&self) -> bool {
         self.mode & libc::S_IFDIR != 0
     }
+
+    // pub fn from_attr(attrs: &FileAttr) -> Self {
+    //     let mode = match attrs.kind {
+    //         FileType::RegularFile => libc::S_IFREG,
+    //         FileType::Directory => libc::S_IFDIR,
+    //     };
+
+    //     Self {
+    //         mode,
+    //         size: attrs.size,
+
+    //     }
+    // }
 
     pub fn as_attr(&self, n: u32) -> FileAttr {
         let kind = match self.mode & libc::S_IFDIR {
