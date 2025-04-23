@@ -1,23 +1,46 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::fs::OpenOptions;
 use std::io::{prelude::*, Cursor, SeekFrom};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use crate::pinoq::{
     config::Config,
     error::{PinoqError, Result},
     filefmt::{
-        from_encrypted_block, to_encrypted_block, Aspect, Dir, EncryptedBlock, INode,
+        from_encrypted_block, to_encrypted_block, Aspect, Block, Dir, EncryptedBlock, INode,
         PinoqSerialize, SuperBlock, BLOCK_SIZE,
     },
 };
 
 use bitvec::{order::Lsb0, vec::BitVec};
-use fuser::{FileAttr, Filesystem, ReplyAttr, ReplyCreate, ReplyDirectory, ReplyEntry, Request};
+use fuser::{
+    FileAttr, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEntry, ReplyOpen,
+    ReplyWrite, Request, TimeOrNow,
+};
 use memmap::MmapMut;
 
 const TTL: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Default)]
+struct FDManager {
+    file_decs: HashMap<u64, FileDescriptor>,
+}
+
+impl FDManager {
+    pub fn get(&self, fd: u64) -> Option<&FileDescriptor> {
+        self.file_decs.get(&fd)
+    }
+
+    pub fn insert(&mut self, fd: u64, val: FileDescriptor) {
+        self.file_decs.insert(fd, val);
+    }
+}
+
+#[derive(Debug, Default)]
+struct FileDescriptor {
+    next_block: Option<u32>,
+}
 
 pub struct PinoqFs {
     config: Config,
@@ -26,6 +49,7 @@ pub struct PinoqFs {
     aspect: Aspect,
     // should be constructed only after decrypting all the aspects
     block_map: BitVec<u8, Lsb0>,
+    fd_manager: FDManager,
 }
 
 impl PinoqFs {
@@ -47,6 +71,7 @@ impl PinoqFs {
             sblock,
             aspect,
             block_map: BitVec::new(),
+            fd_manager: FDManager::default(),
         };
         fs.construct_block_map()?;
         fs.init_root()?;
@@ -72,11 +97,14 @@ impl PinoqFs {
         Ok(())
     }
 
+    /// make sure to store the current aspect after calling this function
+    /// as it only modifies the aspect's block_map in-memory
     fn allocate_block(&mut self) -> Result<usize> {
         let index = self
             .find_free_block()
             .ok_or_else(|| PinoqError::NoEnoughSpace)?;
         self.block_map.set(index, true);
+        self.aspect.block_map.set(index, true);
         Ok(index)
     }
 
@@ -96,10 +124,7 @@ impl PinoqFs {
         // TODO: allocate random blocks
         let root_block_index = self.allocate_block()?;
         let data_block_index = self.allocate_block()?;
-
         self.aspect.root_block = root_block_index as _;
-        self.aspect.block_map.set(root_block_index as _, true);
-        self.aspect.block_map.set(data_block_index as _, true);
 
         let mut root_node = INode::new(libc::S_IFDIR, self.sblock.uid, self.sblock.gid);
         root_node.block_size = BLOCK_SIZE as _;
@@ -146,10 +171,9 @@ impl PinoqFs {
         self.store_to_block(&parent, inode as _)?;
         self.store_to_block(&dir, parent.data_block as _)?;
 
-        self.aspect.block_map.set(node_block_index, true);
         self.store_aspect(self.aspect.clone(), self.config.current.aspect)?;
-
         self.store_to_block(&node, node_block_index as _)?;
+
         Ok(node.as_attr(node_block_index as _))
     }
 
@@ -173,6 +197,84 @@ impl PinoqFs {
         }
 
         Ok(entries)
+    }
+
+    fn write(&mut self, ino: u64, fh: u64, data: &[u8]) -> Result<usize> {
+        const RAW_BLK_SIZE: usize = BLOCK_SIZE - 32;
+
+        let mut next_block = self.allocate_block()?;
+
+        let fd = match self.fd_manager.get(fh) {
+            Some(n) => n,
+            None => {
+                self.fd_manager
+                    .insert(fh, FileDescriptor { next_block: None });
+                &FileDescriptor { next_block: None }
+            }
+        };
+        match fd.next_block {
+            Some(n) => {
+                let mut b = self.get_from_block::<Block>(n as _)?;
+                b.next_block = next_block as _;
+                self.store_to_block(&b, n)?;
+            }
+            None => {
+                let mut inode = self.get_from_block::<INode>(ino as _)?;
+                inode.data_block = next_block as _;
+                self.store_to_block(&inode, ino as _)?;
+            }
+        }
+
+        let mut chunks = data.chunks(RAW_BLK_SIZE).peekable();
+        while let Some(chunk) = chunks.next() {
+            let current_block = next_block;
+            next_block = match chunks.peek() {
+                None => {
+                    self.fd_manager.insert(
+                        fh,
+                        FileDescriptor {
+                            next_block: Some(next_block as _),
+                        },
+                    );
+                    0xFFFFFFFF
+                }
+                Some(_) => self.allocate_block()?,
+            };
+
+            let blk = Block {
+                data: chunk.to_vec(),
+                next_block: next_block as _,
+            };
+            self.store_to_block(&blk, current_block as _)?;
+        }
+
+        self.store_aspect(self.aspect.clone(), self.config.current.aspect)?;
+        Ok(data.len())
+    }
+
+    fn read(&mut self, ino: u64, fh: u64, _offset: u64) -> Result<Vec<u8>> {
+        let fd = self.fd_manager.get(fh).unwrap();
+        let next_block = match fd.next_block {
+            Some(n) => n,
+            None => {
+                let inode = self.get_from_block::<INode>(ino as _)?;
+                inode.data_block
+            }
+        };
+
+        if next_block == 0xFFFFFFFF {
+            return Ok(vec![]);
+        }
+
+        let blk = self.get_from_block::<Block>(next_block)?;
+        self.fd_manager.insert(
+            fh,
+            FileDescriptor {
+                next_block: Some(blk.next_block as _),
+            },
+        );
+
+        Ok(blk.data)
     }
 
     fn store_to_block<T>(&mut self, t: &T, n: u32) -> Result<()>
@@ -209,7 +311,8 @@ impl PinoqFs {
         if n == 1 {
             self.aspect.root_block as _
         } else {
-            n - 1 // indices start from 1 in fuse
+            // n - 1 // indices start from 1 in fuse
+            n
         }
     }
 
@@ -281,6 +384,33 @@ impl Filesystem for PinoqFs {
         }
     }
 
+    fn setattr(
+        &mut self,
+        _req: &Request,
+        ino: u64,
+        _mode: Option<u32>,
+        _uid: Option<u32>,
+        _gid: Option<u32>,
+        _size: Option<u64>,
+        _atime: Option<TimeOrNow>,
+        _mtime: Option<TimeOrNow>,
+        _ctime: Option<SystemTime>,
+        _fh: Option<u64>,
+        _crtime: Option<SystemTime>,
+        _chgtime: Option<SystemTime>,
+        _bkuptime: Option<SystemTime>,
+        _flags: Option<u32>,
+        reply: ReplyAttr,
+    ) {
+        // TODO: not implemented
+        // just return the attrs for now to supress the warnings
+        let ino = self.convert_inode_index(ino);
+        match self.get_from_block::<INode>(ino as u32) {
+            Ok(node) => reply.attr(&TTL, &node.as_attr(ino as _)),
+            Err(_) => reply.error(libc::ENOENT),
+        }
+    }
+
     fn create(
         &mut self,
         _req: &Request,
@@ -296,5 +426,97 @@ impl Filesystem for PinoqFs {
             Ok(attrs) => reply.created(&TTL, &attrs, 0, 0, 0),
             Err(e) => reply.error(e.to_code()),
         }
+    }
+
+    fn write(
+        &mut self,
+        _req: &Request,
+        inode: u64,
+        fh: u64,
+        _offset: i64,
+        data: &[u8],
+        _write_flags: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        reply: ReplyWrite,
+    ) {
+        let inode = self.convert_inode_index(inode);
+        // TODO: consider offset
+        match self.write(inode, fh, data) {
+            Ok(n) => reply.written(n as _),
+            Err(e) => reply.error(e.to_code()),
+        }
+    }
+
+    fn read(
+        &mut self,
+        _req: &Request,
+        inode: u64,
+        fh: u64,
+        offset: i64,
+        _size: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        reply: ReplyData,
+    ) {
+        let inode = self.convert_inode_index(inode);
+        match self.read(inode, fh, offset as _) {
+            Ok(d) => {
+                reply.data(&d);
+            }
+            Err(e) => {
+                reply.error(e.to_code());
+            }
+        }
+    }
+
+    fn open(&mut self, _req: &Request, inode: u64, _flags: i32, reply: ReplyOpen) {
+        let inode = self.convert_inode_index(inode);
+        self.fd_manager
+            .insert(inode, FileDescriptor { next_block: None });
+        reply.opened(inode, fuser::consts::FOPEN_DIRECT_IO);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pinoq::config::*;
+    use crate::pinoq::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_write_data_blocks() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("my-volume.pnoq");
+        let path = path.to_str().unwrap();
+        let password = "testpass".to_string();
+
+        mkfs(2, 1024, path, "password").unwrap();
+
+        let config = Config {
+            disk: path.to_string(),
+            mount: "".to_string(),
+            current: Current {
+                aspect: 1,
+                password: password.clone(),
+            },
+        };
+
+        let data = vec![69; BLOCK_SIZE];
+        let mut fs = PinoqFs::new(config).unwrap();
+        fs.init_root().unwrap();
+
+        fs.create_entry(0, OsStr::new("file.txt")).unwrap();
+
+        fs.fd_manager.insert(0, FileDescriptor { next_block: None });
+        fs.write(2, 0, &data).unwrap();
+
+        let b1 = fs.get_from_block::<Block>(3).unwrap();
+        let b2 = fs.get_from_block::<Block>(4).unwrap();
+        assert!(b1.data.iter().all(|&x| x == 69));
+        assert!(b2.data.iter().all(|&x| x == 69));
+        assert_eq!(b1.data.len() + b2.data.len(), data.len());
+        assert_eq!(b1.next_block, 4);
     }
 }
